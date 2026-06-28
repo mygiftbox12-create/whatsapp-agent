@@ -1,11 +1,13 @@
 {
   "name": "whatsapp-agent",
   "version": "1.0.0",
+  "description": "WhatsApp customer service agent with owner override capabilities",
   "main": "app.js",
   "scripts": {
     "start": "node app.js"
   },
   "dependencies": {
-    "express": "^4.18.2"
+    "express": "^4.19.2",
+    "pg": "^8.12.0"
   }
 }
