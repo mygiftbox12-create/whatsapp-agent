@@ -207,10 +207,11 @@ const BASE_SYSTEM_PROMPT = `אתה סוכן שירות לקוחות מקצועי
 
 תמונות:
 - אם לקוח מבקש לראות איך נראית חולצה בודדת, או מבקש לראות צבע מסוים, אתה יכול לשלוח לו תמונה
-- כדי לשלוח תמונה של חולצה בודדת, כתוב בתשובה שלך תג בפורמט: [IMAGE: שם_הצבע] (שם הצבע באנגלית, אחד מהבאים: black, white, gray, navy, stone, brown, lightbrown, multicolor)
+- כדי לשלוח תמונה של חולצה בודדת, כתוב בתשובה שלך תג בפורמט: [IMAGE: שם_הצבע] (שם הצבע באנגלית, אחד מהבאים: black, white, gray, stone, brown, lightbrown, multicolor)
 - "multicolor" משמש כשהלקוח מבקש לראות את כל הצבעים יחד / קולקציה כללית
 - כדי לשלוח תמונה של סט (חולצה + מכנס), כתוב תג בפורמט: [IMAGE: set-שם_הצבע] - הצבעים הזמינים לסט: set-black, set-white, set-lightbrown, set-navy, set-brown
 - אל תשתמש בתג של סט עבור חולצה בודדת ולהיפך - אלו תמונות שונות
+- חשוב: אין תמונה של חולצה בודדת בצבע "כחול נייבי" - יש רק תמונה של הסט בנייבי. אם לקוח מבקש לראות חולצה בודדת בנייבי, הסבר לו שאין כרגע תמונה מצולמת של חולצה בודדת בצבע הזה, אבל אפשר להראות לו את הסט בנייבי [IMAGE: set-navy] לקבלת מושג על הצבע
 - ניתן לשלב כמה תגי תמונה בתשובה אחת אם הלקוח מבקש כמה צבעים
 - לצבע "שמנת" אין כרגע תמונה מצולמת (לא לחולצה בודדת ולא לסט) - אם מתבקש, הסבר שאין דגם מצולם של הצבע הזה כרגע אבל הוא קיים במלאי
 - שלב את תג התמונה בטבעיות בתוך הטקסט, למשל: "בטח! הנה איך נראית בשחור [IMAGE: black] יפה מאוד, נכון?"
@@ -255,11 +256,11 @@ const COLOR_IMAGE_MAP = {
   black: `${GITHUB_RAW_BASE}/shirt-black.jpeg`,
   white: `${GITHUB_RAW_BASE}/shirt-white.jpeg`,
   gray: `${GITHUB_RAW_BASE}/shirt-gray.jpeg`,
-  navy: `${GITHUB_RAW_BASE}/set-navy.jpeg`,
   stone: `${GITHUB_RAW_BASE}/shirt-stone.jpeg`,
   brown: `${GITHUB_RAW_BASE}/shirt-brown.jpeg`,
   lightbrown: `${GITHUB_RAW_BASE}/shirt-lightbrown.jpeg`,
   multicolor: `${GITHUB_RAW_BASE}/shirt-multicolor.jpeg`
+  // Note: no individual-shirt photo exists for "navy" - only the set photo (set-navy) exists.
 };
 
 // Set product images (shirt + matching pants), separate from individual shirt images
