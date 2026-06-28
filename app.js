@@ -302,7 +302,10 @@ async function buildSystemPrompt(isFirstMessage = false) {
   let prompt = BASE_SYSTEM_PROMPT;
 
   if (isFirstMessage) {
-    prompt += `\n\nהערה לתשובה הזו בלבד: זו ההודעה הראשונה של הלקוח הזה אי פעם. אחרי שתשלח את התשובה שלך, המערכת תשלח אוטומטית 4 תמונות פתיחה (קולקציה כללית, שחור, לבן, חום בהיר). אתה יכול לציין בקצרה שאתה מצרף כמה תמונות לדוגמה.`;
+    prompt += `\n\nהערה לתשובה הזו בלבד: זו ההודעה הראשונה של הלקוח הזה אי פעם.
+המערכת כבר שולחת לפניך אוטומטית הודעת פתיחה קבועה: "היי מה שלומך, התעניינת בחולצות ציצית? שולח פרטים 😊" - אל תכתוב אתה הודעת פתיחה/ברכה דומה, התשובה שלך היא ההודעה הבאה אחריה.
+כתוב כעת תשובה קצרה שמתמקדת במחירי החולצות הבודדות בלבד (250/450/600/200 ליחידה מ-4 ומעלה) - אל תזכיר סטים בשלב הזה אלא אם הלקוח שאל על מכנסיים/סט במפורש.
+אחרי שתשלח את התשובה הזו, המערכת תשלח אוטומטית (לא אתה) רצף קבוע: תמונות של כל הצבעים (חולצות וסטים), ואז הודעת טקסט עם רשימת הצבעים הזמינים, ואז תמונת הקולקציה הכללית. אל תכתוב בעצמך תגי [IMAGE] בתשובה הזו ואל תפרט את רשימת הצבעים בעצמך - זה כבר יישלח אוטומטית אחריך.`;
   } else {
     prompt += `\n\nהערה לתשובה הזו בלבד: זו לא ההודעה הראשונה של הלקוח הזה - המערכת לא תשלח תמונות פתיחה אוטומטיות הפעם. אל תגיד ללקוח שאתה "שולח תמונות" אלא אם כן אתה בעצמך כותב תג [IMAGE: ...] בתשובה שלך.`;
   }
@@ -340,13 +343,27 @@ const SET_IMAGE_MAP = {
 // Merge into one lookup table used by extractImageTags/sendReplyWithImages
 const ALL_IMAGE_MAP = { ...COLOR_IMAGE_MAP, ...SET_IMAGE_MAP };
 
-// Sent automatically once, with the agent's first reply in a new conversation
-const WELCOME_IMAGE_URLS = [
-  `${GITHUB_RAW_BASE}/shirt-multicolor.jpeg`,
+// Full gallery sent automatically on a new conversation: every individual shirt color + every set color
+// (multicolor is sent separately, at the very end, after the colors text message)
+const WELCOME_GALLERY_URLS = [
   `${GITHUB_RAW_BASE}/shirt-black.jpeg`,
   `${GITHUB_RAW_BASE}/shirt-white.jpeg`,
-  `${GITHUB_RAW_BASE}/set-lightbrown.jpeg`
+  `${GITHUB_RAW_BASE}/shirt-gray.jpeg`,
+  `${GITHUB_RAW_BASE}/shirt-stone.jpeg`,
+  `${GITHUB_RAW_BASE}/shirt-brown.jpeg`,
+  `${GITHUB_RAW_BASE}/shirt-lightbrown.jpeg`,
+  `${GITHUB_RAW_BASE}/set-black.jpeg`,
+  `${GITHUB_RAW_BASE}/set-white.jpeg`,
+  `${GITHUB_RAW_BASE}/set-lightbrown.jpeg`,
+  `${GITHUB_RAW_BASE}/set-navy.jpeg`,
+  `${GITHUB_RAW_BASE}/set-brown.jpeg`
 ];
+const WELCOME_MULTICOLOR_URL = `${GITHUB_RAW_BASE}/shirt-multicolor.jpeg`;
+
+const WELCOME_COLORS_TEXT = `צבעים זמינים:
+שחור, לבן, שמנת, אפור, כחול נייבי, אבן, חום כהה, חום בהיר
+
+זמין לכל שאלה 🙏`;
 
 async function sendWhatsAppImage(to, imageUrl, caption = '') {
   try {
@@ -679,14 +696,25 @@ app.post('/webhook', async (req, res) => {
         `⚠️ *פנייה חדשה דורשת התערבות*\n\n👤 לקוח: ${from}\n💬 הודעה: "${text}"\n📋 סיכום: ${description}\n\nלענות: /reply ${from} <התשובה שלך>\nאם זה כלל קבוע להבא: /update <הכלל>`
       );
     } else {
+      if (isFirstMessageInConversation) {
+        // Fixed opening greeting - always sent first, exactly the same, before the agent's price reply
+        const GREETING_TEXT = 'היי מה שלומך,\nהתעניינת בחולצות ציצית?\nשולח פרטים 😊';
+        await sendWhatsAppMessage(from, GREETING_TEXT);
+        await appendConversation(from, 'assistant', GREETING_TEXT);
+      }
+
       const { cleanText } = extractImageTags(reply);
       await appendConversation(from, 'assistant', cleanText || reply);
       await sendReplyWithImages(from, reply);
 
       if (isFirstMessageInConversation) {
-        for (const url of WELCOME_IMAGE_URLS) {
+        // Fixed structured sequence: full gallery -> colors text -> multicolor image (last)
+        for (const url of WELCOME_GALLERY_URLS) {
           await sendWhatsAppImage(from, url);
         }
+        await sendWhatsAppMessage(from, WELCOME_COLORS_TEXT);
+        await appendConversation(from, 'assistant', WELCOME_COLORS_TEXT);
+        await sendWhatsAppImage(from, WELCOME_MULTICOLOR_URL);
       }
     }
   } catch (e) {
