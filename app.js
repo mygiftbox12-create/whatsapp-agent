@@ -46,7 +46,7 @@ const BASE_SYSTEM_PROMPT = `אתה סוכן שירות לקוחות מקצועי
 החולצות הן אוברסייז:
 - מומלץ לקחת את המידה הרגילה אם אוהבים אוברסייז
 - לקחת מידה אחת פחות אם רוצים שיהיה יותר צמוד
-- אם הנתונים לא מסתדרים עם הטבלה — כתוב [ESCALATE]
+- אם הנתונים לא מסתדרים עם הטבלה — כתוב [ESCALATE: לקוח עם מידות לא סטנדרטיות, גובה X משקל Y]
 
 תהליך הזמנה בוואטסאפ:
 1. בקש מהלקוח לשלוח גובה ומשקל להתאמת מידה (אם לא יודע את מידתו)
@@ -87,8 +87,23 @@ const BASE_SYSTEM_PROMPT = `אתה סוכן שירות לקוחות מקצועי
 - ענה בצורה קצרה וברורה
 - אם לקוח מתעניין — נסה לסגור מכירה בצורה טבעית ולא דוחפנית
 - בסוף כל שיחת מכירה — שלח את קישור האתר לרכישה
-- אם שואלים שאלה שאין לך תשובה עליה — כתוב בדיוק: [ESCALATE]
-- אל תמציא מידע שלא ניתן לך`;
+- אל תמציא מידע שלא ניתן לך
+
+מתי לעצור ולהעביר לבעלים (escalation) - אלה החריגים שדורשים אישור אנושי:
+- בקשות תשלום לא סטנדרטיות (מזומן, הנחה, תנאי תשלום מיוחדים)
+- בקשות איסוף/משלוח לא רגילות (איסוף עצמי שלא בשעות הרגילות, משלוח לאזור מרוחק, בקשה שהבעלים יגיע אישית)
+- כל בקשה לתנאים מיוחדים, הנחות, או חריגות ממה שכתוב במידע שניתן לך
+- שאלה שאין לך תשובה עליה מהמידע שניתן לך
+- כל מקרה שמרגיש לא שגרתי או רגיש (תלונה, בעיה במוצר שהתקבל, בקשה חריגה)
+
+כשאתה מחליט להסלים, כתוב בפורמט הזה (כדי שהבעלים יידע בדיוק על מה השאלה):
+[ESCALATE: תיאור קצר של מה הלקוח מבקש/שואל]
+
+לדוגמה:
+- לקוח רוצה לשלם במזומן ולתאם הגעה → [ESCALATE: לקוח מבקש לשלם במזומן, צריך לבדוק איפה הוא גר ואם זה מתאים ללו"ז]
+- לקוח שואל על הנחה לכמות גדולה → [ESCALATE: לקוח מבקש הנחה על הזמנה של 10 חולצות]
+
+לגבי בקשות חריגות - אל תגיד ללקוח "אין אפשרות" או "לא ניתן" בעצמך. במקום זה תגיד שאתה בודק ותחזור אליו, ותפעיל [ESCALATE].`;
 
 function buildSystemPrompt() {
   if (liveUpdates.length === 0) return BASE_SYSTEM_PROMPT;
@@ -146,7 +161,7 @@ async function handleOwnerCommand(text) {
     if (openEscalations.length > 0) {
       report += `\nרשימת פניות פתוחות:\n`;
       for (const [phone, info] of openEscalations) {
-        report += `• ${phone}: "${info.lastMessage}"\n`;
+        report += `• ${phone}: "${info.lastMessage}"\n  📋 ${info.description || 'ללא פירוט'}\n`;
       }
     }
     if (liveUpdates.length > 0) {
@@ -201,6 +216,12 @@ async function handleOwnerCommand(text) {
 
     await sendWhatsAppMessage(matchedKey, replyText);
     pendingEscalations.delete(matchedKey);
+
+    // Save this into conversation history so the agent has context if customer follows up
+    const history = conversationLog.get(matchedKey) || [];
+    history.push({ role: 'assistant', content: replyText });
+    conversationLog.set(matchedKey, history.slice(-10));
+
     await sendWhatsAppMessage(OWNER_PHONE, `✅ נשלח ללקוח ${matchedKey}:\n"${replyText}"`);
     return true;
   }
@@ -208,11 +229,12 @@ async function handleOwnerCommand(text) {
   // /help
   if (trimmed === '/help' || trimmed === '/עזרה') {
     const helpText = `🛠 *פקודות בעלים*\n\n` +
-      `/status — תמונת מצב נוכחית\n` +
-      `/update <מידע> — הוסף מידע עדכני לסוכן (למשל: "אין מלאי בצבע שחור")\n` +
+      `/status — תמונת מצב נוכחית (כולל פירוט הפניות הפתוחות)\n` +
+      `/update <מידע> — הוסף כלל קבוע שיחול מעכשיו על כל הלקוחות (למשל: "אין מלאי בצבע שחור")\n` +
       `/clearupdates — נקה את כל העדכונים שהוספת\n` +
-      `/reply <מספר> <תשובה> — שלח תשובה ידנית ללקוח שממתין\n` +
-      `/help — הצג רשימה זו`;
+      `/reply <מספר> <תשובה> — שלח תשובה ידנית ללקוח ספציפי שממתין (חד-פעמי, לא נשמר לעתיד)\n` +
+      `/help — הצג רשימה זו\n\n` +
+      `💡 הסוכן יעביר אליך אוטומטית כל בקשה חריגה (תשלום במזומן, הנחות, תנאים מיוחדים) עם תיאור קצר של הבקשה.`;
     await sendWhatsAppMessage(OWNER_PHONE, helpText);
     return true;
   }
@@ -256,6 +278,12 @@ app.post('/webhook', async (req, res) => {
     // ===== Regular customer flow =====
     stats.totalMessages++;
 
+    // Maintain simple conversation history per customer (for context across messages)
+    const history = conversationLog.get(from) || [];
+    history.push({ role: 'user', content: text });
+    // keep last 10 turns to avoid unbounded growth
+    const trimmedHistory = history.slice(-10);
+
     const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -267,26 +295,34 @@ app.post('/webhook', async (req, res) => {
         model: 'claude-sonnet-4-6',
         max_tokens: 1000,
         system: buildSystemPrompt(),
-        messages: [{ role: 'user', content: text }]
+        messages: trimmedHistory
       })
     });
 
     const claudeData = await claudeRes.json();
-    const reply = claudeData.content?.[0]?.text || '[ESCALATE]';
+    const reply = claudeData.content?.[0]?.text || '[ESCALATE: שגיאה טכנית בסוכן]';
 
-    if (reply.includes('[ESCALATE]')) {
+    // Match [ESCALATE] or [ESCALATE: description]
+    const escalateMatch = reply.match(/\[ESCALATE(?::\s*(.+?))?\]/);
+
+    if (escalateMatch) {
       stats.totalEscalations++;
+      const description = escalateMatch[1] || 'לא צוין פירוט';
       pendingEscalations.set(from, {
         lastMessage: text,
+        description,
         lastEscalatedAt: new Date(),
         awaitingOwnerReply: true
       });
+      // Don't save the [ESCALATE] reply itself into history
       await sendWhatsAppMessage(from, 'תודה על פנייתך! נציג שלנו יחזור אליך בהקדם 🙏');
       await sendWhatsAppMessage(
         OWNER_PHONE,
-        `⚠️ פנייה חדשה מלקוח ${from}:\n"${text}"\nהסוכן לא ידע לענות — נא לטפל!\n\nלענות: /reply ${from} <התשובה שלך>`
+        `⚠️ *פנייה חדשה דורשת התערבות*\n\n👤 לקוח: ${from}\n💬 הודעה: "${text}"\n📋 סיכום: ${description}\n\nלענות: /reply ${from} <התשובה שלך>\nאם זה כלל קבוע להבא: /update <הכלל>`
       );
     } else {
+      history.push({ role: 'assistant', content: reply });
+      conversationLog.set(from, history.slice(-10));
       await sendWhatsAppMessage(from, reply);
     }
   } catch (e) {
