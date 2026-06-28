@@ -16,6 +16,67 @@ const pool = new Pool({
   ssl: DATABASE_URL && DATABASE_URL.includes('render.com') ? { rejectUnauthorized: false } : false
 });
 
+// ===== Deterministic size calculation (oversized fit) =====
+// Validated anchor points: height (m) -> base size at "average" weight for that height.
+// Height is the PRIMARY driver (garment length), weight only nudges the size up/down within that.
+const SIZES_ORDER = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL'];
+
+// height -> [baseSize, averageWeightKg] - confirmed by the store owner
+const HEIGHT_ANCHORS = [
+  [1.50, 'XS', 52],
+  [1.55, 'XS', 55],
+  [1.60, 'S', 60],
+  [1.65, 'S', 63],
+  [1.70, 'M', 67],
+  [1.75, 'M', 71],   // borderline M/L - weight nudge handles it naturally
+  [1.80, 'L', 75],
+  [1.85, 'XL', 80],
+  [1.90, 'XXL', 85],
+  [1.95, '3XL', 90],
+];
+
+const WEIGHT_STEP_KG = 12; // each ~12kg above/below the average for that height shifts one size
+
+function interpolateAnchor(height) {
+  // Find the two nearest anchors and interpolate baseSize index + averageWeight
+  if (height <= HEIGHT_ANCHORS[0][0]) {
+    const [, size, avgW] = HEIGHT_ANCHORS[0];
+    return { sizeIdx: SIZES_ORDER.indexOf(size), avgWeight: avgW };
+  }
+  if (height >= HEIGHT_ANCHORS[HEIGHT_ANCHORS.length - 1][0]) {
+    const [, size, avgW] = HEIGHT_ANCHORS[HEIGHT_ANCHORS.length - 1];
+    return { sizeIdx: SIZES_ORDER.indexOf(size), avgWeight: avgW };
+  }
+  for (let i = 0; i < HEIGHT_ANCHORS.length - 1; i++) {
+    const [h1, size1, w1] = HEIGHT_ANCHORS[i];
+    const [h2, size2, w2] = HEIGHT_ANCHORS[i + 1];
+    if (height >= h1 && height <= h2) {
+      const ratio = (height - h1) / (h2 - h1);
+      const idx1 = SIZES_ORDER.indexOf(size1);
+      const idx2 = SIZES_ORDER.indexOf(size2);
+      const sizeIdx = idx1 + (idx2 - idx1) * ratio;
+      const avgWeight = w1 + (w2 - w1) * ratio;
+      return { sizeIdx, avgWeight };
+    }
+  }
+  // fallback (shouldn't reach here)
+  const [, size, avgW] = HEIGHT_ANCHORS[Math.floor(HEIGHT_ANCHORS.length / 2)];
+  return { sizeIdx: SIZES_ORDER.indexOf(size), avgWeight: avgW };
+}
+
+// Returns { oversized: 'XL', fitted: 'L' } for given height (meters) and weight (kg)
+function calculateSize(heightM, weightKg) {
+  const { sizeIdx, avgWeight } = interpolateAnchor(heightM);
+  const diff = weightKg - avgWeight;
+  const shift = Math.round(diff / WEIGHT_STEP_KG);
+  const rawIdx = Math.round(sizeIdx) + shift;
+  const clampedIdx = Math.max(0, Math.min(SIZES_ORDER.length - 1, rawIdx));
+  const oversizedSize = SIZES_ORDER[clampedIdx];
+  const fittedIdx = Math.max(0, clampedIdx - 1);
+  const fittedSize = SIZES_ORDER[fittedIdx];
+  return { oversized: oversizedSize, fitted: fittedSize };
+}
+
 async function initDb() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS pending_escalations (
@@ -156,23 +217,17 @@ const BASE_SYSTEM_PROMPT = `אתה סוכן שירות לקוחות מקצועי
 - צבעים זמינים לסט: שחור, לבן, חום בהיר, כחול נייבי, חום כהה
 - אם לקוח מתעניין בסט, ודא שהוא מבין שזה כולל חולצה ומכנס יחד (לא רק חולצה)
 
-מידות וטבלת התאמה לפי גובה ומשקל (זו טבלת מידות אוברסייז - לאדם שאוהב ללבוש אוברסייז):
-הגובה הוא הגורם העיקרי לקביעת המידה (כדי שאורך החולצה יתאים נכון בקו המותן), והמשקל מדייק בתוך זה.
-- גובה 1.50מ': XS עד 58 ק"ג, S 59-69, M 70-82, L 83-93, XL 94-106, XXL 107-117, 3XL 118 ק"ג ומעלה
-- גובה 1.55מ': XS עד 61 ק"ג, S 62-72, M 73-85, L 86-96, XL 97-109, XXL 110-120, 3XL 121 ק"ג ומעלה
-- גובה 1.60מ': XS עד 53 ק"ג, S 54-66, M 67-77, L 78-90, XL 91-101, XXL 102-114, 3XL 115 ק"ג ומעלה
-- גובה 1.65מ': XS עד 56 ק"ג, S 57-69, M 70-80, L 81-93, XL 94-104, XXL 105-117, 3XL 118 ק"ג ומעלה
-- גובה 1.70מ': S עד 60 ק"ג, M 61-73, L 74-84, XL 85-97, XXL 98-108, 3XL 109 ק"ג ומעלה
-- גובה 1.75מ': S עד 64 ק"ג, M 65-77, L 78-88, XL 89-101, XXL 102-112, 3XL 113 ק"ג ומעלה
-- גובה 1.80מ': S עד 68 ק"ג, M 69-81, L 82-92, XL 93-105, XXL 106-118, 3XL 119 ק"ג ומעלה (הערה: אם המשקל הוא 75 ומעלה תן L, אם 60-70 אפשר עדיין M - גובה גבולי בין M ל-L)
-- גובה 1.85מ': M עד 62 ק"ג, L 63-73, XL 74-86, XXL 87-97, 3XL 98 ק"ג ומעלה
-- גובה 1.90מ': M עד 54 ק"ג, L 55-67, XL 68-78, XXL 79-91, 3XL 92 ק"ג ומעלה
-- גובה 1.95מ': M עד 48 ק"ג, L 49-59, XL 60-72, XXL 73-83, 3XL 84 ק"ג ומעלה
-- לגובה ביניים (לא מדויק לאחת השורות) - התאם פרופורציונלית בין שתי השורות הקרובות ביותר
+מידות - חשוב מאוד, קרא בעיון:
+החולצות הן אוברסייז. כדי לחשב את המידה המומלצת, אסור לך לחשב בעצמך לפי הערכה - יש מערכת מדויקת שעושה את זה.
+כשהלקוח שולח גובה ומשקל, כתוב בתשובה שלך תג בפורמט הזה (במקום לנחש מידה בעצמך):
+[SIZE_CALC: height=1.75 weight=86]
+(height במטרים עם נקודה עשרית, weight בק"ג, מספרים בלבד)
 
-חשוב: הטבלה הזו היא ההמלצה לאדם שאוהב ללבוש אוברסייז (החולצות הן אוברסייז במהותן).
-אם הלקוח אומר שהוא מעדיף לבישה צמודה יחסית ולא רוצה אוברסייז - תרד מידה אחת מהטבלה (לדוגמה: אם הטבלה אומרת XL, תמליץ L).
-אם הנתונים שהלקוח שלח לא הגיוניים (למשל גובה/משקל לא ריאליים בעליל) — כתוב [ESCALATE: לקוח עם מידות לא סטנדרטיות, גובה X משקל Y]
+המערכת תחשב את המידה המדויקת ותחזיר לך אותה לפני שתשלח את התשובה הסופית ללקוח - כך שתוכל לנסח תשובה טבעית עם המידה הנכונה.
+אל תכתוב בעצמך איזו מידה אתה חושב שמתאימה - תמיד תן למערכת לחשב, אפילו אם אתה "בטוח" שאתה יודע את התשובה.
+אם הלקוח כבר נתן גובה ומשקל בהודעה קודמת בשיחה ושאל שאלת המשך, אפשר להשתמש בתג שוב עם אותם נתונים כדי לקבל את המידה המדויקת מחדש - אל תסתמך על זיכרון של תשובה קודמת.
+אם הלקוח אומר שהוא מעדיף לבישה צמודה יחסית ולא רוצה אוברסייז - המערכת תחזיר לך גם את המידה ל"צמוד" וגם ל"אוברסייז", תבחר את המתאימה.
+אם הנתונים שהלקוח שלח לא הגיוניים בעליל (גובה/משקל לא אפשריים) — כתוב [ESCALATE: לקוח עם מידות לא סטנדרטיות, גובה X משקל Y]
 
 תהליך הזמנה בוואטסאפ:
 1. בקש מהלקוח לשלוח גובה ומשקל להתאמת מידה (אם לא יודע את מידתו)
@@ -481,9 +536,23 @@ app.post('/webhook', async (req, res) => {
     const entry = req.body.entry?.[0];
     const change = entry?.changes?.[0];
     const message = change?.value?.messages?.[0];
-    if (!message || message.type !== 'text') return;
+    if (!message) return;
 
     const from = message.from;
+
+    // Handle non-text message types (voice notes, images, documents, stickers, etc.)
+    if (message.type !== 'text') {
+      // Don't bother the owner with unsupported message types - just reply to the customer
+      if (normalizePhone(from) !== OWNER_PHONE_NORMALIZED) {
+        if (message.type === 'audio' || message.type === 'voice') {
+          await sendWhatsAppMessage(from, 'אני לא יכול לשמוע הודעות קוליות 🙏 אפשר להקליד בבקשה, או לחייג למספר 0543184416');
+        } else {
+          await sendWhatsAppMessage(from, 'אני יכול לטפל רק בהודעות טקסט כרגע 🙏 אפשר להקליד בבקשה, או לחייג למספר 0543184416');
+        }
+      }
+      return;
+    }
+
     const text = message.text.body;
 
     // ===== Is this message from the owner? =====
@@ -553,7 +622,49 @@ app.post('/webhook', async (req, res) => {
     });
 
     const claudeData = await claudeRes.json();
-    const reply = claudeData.content?.[0]?.text || '[ESCALATE: שגיאה טכנית בסוכן]';
+    let reply = claudeData.content?.[0]?.text || '[ESCALATE: שגיאה טכנית בסוכן]';
+
+    // ===== Deterministic size calculation =====
+    // If Claude requested a size calculation, compute it in code (never trust the LLM's own math)
+    // and ask Claude to rewrite its reply using the correct, system-computed size.
+    const sizeCalcMatch = reply.match(/\[SIZE_CALC:\s*height=([\d.]+)\s+weight=([\d.]+)\s*\]/);
+    if (sizeCalcMatch) {
+      const heightM = parseFloat(sizeCalcMatch[1]);
+      const weightKg = parseFloat(sizeCalcMatch[2]);
+
+      if (!isNaN(heightM) && !isNaN(weightKg) && heightM > 1.0 && heightM < 2.5 && weightKg > 20 && weightKg < 300) {
+        const { oversized, fitted } = calculateSize(heightM, weightKg);
+
+        const followUpHistory = [
+          ...history,
+          { role: 'assistant', content: reply },
+          {
+            role: 'user',
+            content: `[תוצאת המערכת] עבור גובה ${heightM} מטר ומשקל ${weightKg} ק"ג: המידה המדויקת היא ${oversized} (ללבישה אוברסייז) או ${fitted} (ללבישה צמודה יותר). כתוב כעת את התשובה הסופית בעברית טבעית ללקוח עם המידה הנכונה הזו בלבד - אל תכתוב שום תג [SIZE_CALC] בתשובה הזו.`
+          }
+        ];
+
+        const followUpRes = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': CLAUDE_API_KEY,
+            'anthropic-version': '2023-06-01'
+          },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 1000,
+            system: await buildSystemPrompt(isFirstMessageInConversation),
+            messages: followUpHistory
+          })
+        });
+        const followUpData = await followUpRes.json();
+        reply = followUpData.content?.[0]?.text || reply;
+      } else {
+        // Unrealistic numbers - let the escalate path handle it
+        reply = reply.replace(sizeCalcMatch[0], '[ESCALATE: נתוני גובה/משקל לא הגיוניים]');
+      }
+    }
 
     const escalateMatch = reply.match(/\[ESCALATE(?::\s*(.+?))?\]/);
 
