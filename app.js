@@ -1,4 +1,5 @@
 const express = require('express');
+const { Pool } = require('pg');
 const app = express();
 app.use(express.json());
 
@@ -7,20 +8,127 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const OWNER_PHONE = process.env.OWNER_PHONE || "972543184416";
+const DATABASE_URL = process.env.DATABASE_URL;
 
-// ===== In-memory state (resets on server restart / sleep) =====
-// Map of customer phone -> { lastMessage, lastEscalatedAt, awaitingOwnerReply }
-const pendingEscalations = new Map();
-// Map of customer phone -> array of recent turns (for context, optional/simple)
-const conversationLog = new Map();
-// Extra info the owner has added live (appended to system prompt)
-let liveUpdates = [];
-// Simple counters for /status
-const stats = {
-  totalMessages: 0,
-  totalEscalations: 0,
-  startedAt: new Date()
-};
+// ===== PostgreSQL connection =====
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: DATABASE_URL && DATABASE_URL.includes('render.com') ? { rejectUnauthorized: false } : false
+});
+
+async function initDb() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pending_escalations (
+      phone TEXT PRIMARY KEY,
+      last_message TEXT,
+      description TEXT,
+      escalated_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS conversation_log (
+      id SERIAL PRIMARY KEY,
+      phone TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS live_updates (
+      id SERIAL PRIMARY KEY,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS stats (
+      key TEXT PRIMARY KEY,
+      value BIGINT DEFAULT 0
+    );
+  `);
+  await pool.query(`
+    INSERT INTO stats (key, value) VALUES ('total_messages', 0), ('total_escalations', 0)
+    ON CONFLICT (key) DO NOTHING;
+  `);
+  console.log('Database initialized.');
+}
+
+// ===== DB helper functions =====
+
+async function incrementStat(key) {
+  const res = await pool.query(
+    `UPDATE stats SET value = value + 1 WHERE key = $1 RETURNING value`,
+    [key]
+  );
+  return res.rows[0]?.value || 0;
+}
+
+async function getStat(key) {
+  const res = await pool.query(`SELECT value FROM stats WHERE key = $1`, [key]);
+  return res.rows[0]?.value || 0;
+}
+
+async function getConversationHistory(phone, limit = 10) {
+  const res = await pool.query(
+    `SELECT role, content FROM conversation_log WHERE phone = $1 ORDER BY id DESC LIMIT $2`,
+    [phone, limit]
+  );
+  return res.rows.reverse().map(r => ({ role: r.role, content: r.content }));
+}
+
+async function appendConversation(phone, role, content) {
+  await pool.query(
+    `INSERT INTO conversation_log (phone, role, content) VALUES ($1, $2, $3)`,
+    [phone, role, content]
+  );
+}
+
+async function setPendingEscalation(phone, lastMessage, description) {
+  await pool.query(
+    `INSERT INTO pending_escalations (phone, last_message, description, escalated_at)
+     VALUES ($1, $2, $3, now())
+     ON CONFLICT (phone) DO UPDATE SET last_message = $2, description = $3, escalated_at = now()`,
+    [phone, lastMessage, description]
+  );
+}
+
+async function getPendingEscalations() {
+  const res = await pool.query(
+    `SELECT phone, last_message, description, escalated_at FROM pending_escalations ORDER BY escalated_at ASC`
+  );
+  return res.rows;
+}
+
+async function findPendingEscalationByPhone(targetPhoneDigits) {
+  const res = await pool.query(`SELECT phone FROM pending_escalations`);
+  for (const row of res.rows) {
+    const rowDigits = normalizePhone(row.phone);
+    if (rowDigits === targetPhoneDigits || rowDigits.endsWith(targetPhoneDigits)) {
+      return row.phone;
+    }
+  }
+  return null;
+}
+
+async function deletePendingEscalation(phone) {
+  await pool.query(`DELETE FROM pending_escalations WHERE phone = $1`, [phone]);
+}
+
+async function addLiveUpdate(content) {
+  await pool.query(`INSERT INTO live_updates (content) VALUES ($1)`, [content]);
+}
+
+async function getLiveUpdates() {
+  const res = await pool.query(`SELECT id, content FROM live_updates ORDER BY id ASC`);
+  return res.rows;
+}
+
+async function clearLiveUpdates() {
+  await pool.query(`DELETE FROM live_updates`);
+}
+
+// ===== System prompt =====
 
 const BASE_SYSTEM_PROMPT = `אתה סוכן שירות לקוחות מקצועי ואדיב של חנות חולצות ציצית מהודרות ואופנתיות בשם My Gift.
 ענה תמיד בעברית, בצורה חמה, ידידותית ומקצועית.
@@ -105,13 +213,16 @@ const BASE_SYSTEM_PROMPT = `אתה סוכן שירות לקוחות מקצועי
 
 לגבי בקשות חריגות - אל תגיד ללקוח "אין אפשרות" או "לא ניתן" בעצמך. במקום זה תגיד שאתה בודק ותחזור אליו, ותפעיל [ESCALATE].`;
 
-function buildSystemPrompt() {
-  if (liveUpdates.length === 0) return BASE_SYSTEM_PROMPT;
+async function buildSystemPrompt() {
+  const updates = await getLiveUpdates();
+  if (updates.length === 0) return BASE_SYSTEM_PROMPT;
   return `${BASE_SYSTEM_PROMPT}
 
 עדכונים חדשים מהבעלים (מידע עדכני - תמיד תעדיף אותו על פני המידע שמעליו אם יש סתירה):
-${liveUpdates.map((u, i) => `${i + 1}. ${u}`).join('\n')}`;
+${updates.map((u, i) => `${i + 1}. ${u.content}`).join('\n')}`;
 }
+
+// ===== WhatsApp send helper =====
 
 async function sendWhatsAppMessage(to, text) {
   try {
@@ -137,7 +248,6 @@ async function sendWhatsAppMessage(to, text) {
 }
 
 function normalizePhone(p) {
-  // strip non-digits for safer comparisons
   return (p || '').replace(/\D/g, '');
 }
 
@@ -150,23 +260,24 @@ async function handleOwnerCommand(text) {
 
   // /status
   if (trimmed === '/status' || trimmed === '/סטטוס') {
-    const uptimeMin = Math.floor((Date.now() - stats.startedAt.getTime()) / 60000);
-    const openEscalations = [...pendingEscalations.entries()]
-      .filter(([, v]) => v.awaitingOwnerReply);
+    const totalMessages = await getStat('total_messages');
+    const totalEscalations = await getStat('total_escalations');
+    const openEscalations = await getPendingEscalations();
+    const updates = await getLiveUpdates();
+
     let report = `📊 *סטטוס סוכן*\n`;
-    report += `🕐 פעיל: ${uptimeMin} דקות\n`;
-    report += `💬 הודעות שטופלו: ${stats.totalMessages}\n`;
-    report += `⚠️ פניות שהועברו אליך: ${stats.totalEscalations}\n`;
+    report += `💬 הודעות שטופלו (סה"כ): ${totalMessages}\n`;
+    report += `⚠️ פניות שהועברו אליך (סה"כ): ${totalEscalations}\n`;
     report += `🔓 פניות פתוחות (ממתינות לתשובה): ${openEscalations.length}\n`;
     if (openEscalations.length > 0) {
       report += `\nרשימת פניות פתוחות:\n`;
-      for (const [phone, info] of openEscalations) {
-        report += `• ${phone}: "${info.lastMessage}"\n  📋 ${info.description || 'ללא פירוט'}\n`;
+      for (const row of openEscalations) {
+        report += `• ${row.phone}: "${row.last_message}"\n  📋 ${row.description || 'ללא פירוט'}\n`;
       }
     }
-    if (liveUpdates.length > 0) {
+    if (updates.length > 0) {
       report += `\n📝 עדכונים פעילים:\n`;
-      liveUpdates.forEach((u, i) => { report += `${i + 1}. ${u}\n`; });
+      updates.forEach((u, i) => { report += `${i + 1}. ${u.content}\n`; });
     }
     await sendWhatsAppMessage(OWNER_PHONE, report);
     return true;
@@ -176,7 +287,7 @@ async function handleOwnerCommand(text) {
   if (trimmed.startsWith('/update ') || trimmed.startsWith('/עדכון ')) {
     const content = trimmed.replace(/^\/(update|עדכון)\s+/, '').trim();
     if (content) {
-      liveUpdates.push(content);
+      await addLiveUpdate(content);
       await sendWhatsAppMessage(OWNER_PHONE, `✅ נוסף עדכון: "${content}"\nהסוכן ישתמש בזה מעכשיו.`);
     }
     return true;
@@ -184,7 +295,7 @@ async function handleOwnerCommand(text) {
 
   // /clearupdates
   if (trimmed === '/clearupdates' || trimmed === '/נקה') {
-    liveUpdates = [];
+    await clearLiveUpdates();
     await sendWhatsAppMessage(OWNER_PHONE, '🧹 כל העדכונים נוקו.');
     return true;
   }
@@ -197,32 +308,21 @@ async function handleOwnerCommand(text) {
       await sendWhatsAppMessage(OWNER_PHONE, '⚠️ פורמט שגוי. שלח: /reply <מספר טלפון> <תשובה>');
       return true;
     }
-    const targetPhone = normalizePhone(rest.slice(0, spaceIdx));
+    const targetPhoneDigits = normalizePhone(rest.slice(0, spaceIdx));
     const replyText = rest.slice(spaceIdx + 1).trim();
 
-    // find matching pending escalation by normalized phone
-    let matchedKey = null;
-    for (const key of pendingEscalations.keys()) {
-      if (normalizePhone(key) === targetPhone || normalizePhone(key).endsWith(targetPhone)) {
-        matchedKey = key;
-        break;
-      }
-    }
+    const matchedPhone = await findPendingEscalationByPhone(targetPhoneDigits);
 
-    if (!matchedKey) {
+    if (!matchedPhone) {
       await sendWhatsAppMessage(OWNER_PHONE, `⚠️ לא נמצאה פנייה פתוחה ממספר ${rest.slice(0, spaceIdx)}. שלח /status לרשימה.`);
       return true;
     }
 
-    await sendWhatsAppMessage(matchedKey, replyText);
-    pendingEscalations.delete(matchedKey);
+    await sendWhatsAppMessage(matchedPhone, replyText);
+    await deletePendingEscalation(matchedPhone);
+    await appendConversation(matchedPhone, 'assistant', replyText);
 
-    // Save this into conversation history so the agent has context if customer follows up
-    const history = conversationLog.get(matchedKey) || [];
-    history.push({ role: 'assistant', content: replyText });
-    conversationLog.set(matchedKey, history.slice(-10));
-
-    await sendWhatsAppMessage(OWNER_PHONE, `✅ נשלח ללקוח ${matchedKey}:\n"${replyText}"`);
+    await sendWhatsAppMessage(OWNER_PHONE, `✅ נשלח ללקוח ${matchedPhone}:\n"${replyText}"`);
     return true;
   }
 
@@ -234,14 +334,16 @@ async function handleOwnerCommand(text) {
       `/clearupdates — נקה את כל העדכונים שהוספת\n` +
       `/reply <מספר> <תשובה> — שלח תשובה ידנית ללקוח ספציפי שממתין (חד-פעמי, לא נשמר לעתיד)\n` +
       `/help — הצג רשימה זו\n\n` +
-      `💡 הסוכן יעביר אליך אוטומטית כל בקשה חריגה (תשלום במזומן, הנחות, תנאים מיוחדים) עם תיאור קצר של הבקשה.`;
+      `💡 הסוכן יעביר אליך אוטומטית כל בקשה חריגה (תשלום במזומן, הנחות, תנאים מיוחדים) עם תיאור קצר של הבקשה.\n` +
+      `🗄️ כל המידע נשמר במסד נתונים קבוע ולא נמחק כשהשרת נכבה/מתאפס.`;
     await sendWhatsAppMessage(OWNER_PHONE, helpText);
     return true;
   }
 
-  // not a recognized command -> let it fall through to normal flow (owner just chatting)
   return false;
 }
+
+// ===== Webhook routes =====
 
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
@@ -269,20 +371,16 @@ app.post('/webhook', async (req, res) => {
     if (normalizePhone(from) === OWNER_PHONE_NORMALIZED) {
       const handled = await handleOwnerCommand(text);
       if (handled) return;
-      // If owner sent a plain message (not a command), just acknowledge.
       await sendWhatsAppMessage(OWNER_PHONE,
         'קיבלתי 👍 (שלח /help לרשימת פקודות: /status, /update, /reply)');
       return;
     }
 
     // ===== Regular customer flow =====
-    stats.totalMessages++;
+    await incrementStat('total_messages');
 
-    // Maintain simple conversation history per customer (for context across messages)
-    const history = conversationLog.get(from) || [];
-    history.push({ role: 'user', content: text });
-    // keep last 10 turns to avoid unbounded growth
-    const trimmedHistory = history.slice(-10);
+    await appendConversation(from, 'user', text);
+    const history = await getConversationHistory(from, 10);
 
     const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -294,40 +392,42 @@ app.post('/webhook', async (req, res) => {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 1000,
-        system: buildSystemPrompt(),
-        messages: trimmedHistory
+        system: await buildSystemPrompt(),
+        messages: history
       })
     });
 
     const claudeData = await claudeRes.json();
     const reply = claudeData.content?.[0]?.text || '[ESCALATE: שגיאה טכנית בסוכן]';
 
-    // Match [ESCALATE] or [ESCALATE: description]
     const escalateMatch = reply.match(/\[ESCALATE(?::\s*(.+?))?\]/);
 
     if (escalateMatch) {
-      stats.totalEscalations++;
+      await incrementStat('total_escalations');
       const description = escalateMatch[1] || 'לא צוין פירוט';
-      pendingEscalations.set(from, {
-        lastMessage: text,
-        description,
-        lastEscalatedAt: new Date(),
-        awaitingOwnerReply: true
-      });
-      // Don't save the [ESCALATE] reply itself into history
+      await setPendingEscalation(from, text, description);
+
       await sendWhatsAppMessage(from, 'תודה על פנייתך! נציג שלנו יחזור אליך בהקדם 🙏');
       await sendWhatsAppMessage(
         OWNER_PHONE,
         `⚠️ *פנייה חדשה דורשת התערבות*\n\n👤 לקוח: ${from}\n💬 הודעה: "${text}"\n📋 סיכום: ${description}\n\nלענות: /reply ${from} <התשובה שלך>\nאם זה כלל קבוע להבא: /update <הכלל>`
       );
     } else {
-      history.push({ role: 'assistant', content: reply });
-      conversationLog.set(from, history.slice(-10));
+      await appendConversation(from, 'assistant', reply);
       await sendWhatsAppMessage(from, reply);
     }
   } catch (e) {
-    console.error(e);
+    console.error('Webhook handler error:', e);
   }
 });
 
-app.listen(3000, () => console.log('Server running on port 3000'));
+app.get('/health', (req, res) => res.send('ok'));
+
+initDb()
+  .then(() => {
+    app.listen(3000, () => console.log('Server running on port 3000, DB initialized.'));
+  })
+  .catch(err => {
+    console.error('Failed to initialize DB:', err);
+    process.exit(1);
+  });
