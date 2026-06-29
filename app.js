@@ -258,9 +258,23 @@ const BASE_SYSTEM_PROMPT = `אתה סוכן שירות לקוחות מקצועי
 - אשראי טלפוני — התקשר ל-0543184416 בשעות הפעילות
 - אשראי באתר: https://mygiftbox.co.il/מארזי-מתנה-לגבר/חולצות-ציצית/
 
-איסוף פרטי משלוח - חשוב מאוד, שים לב להבדל:
-- אם הלקוח משלם בביט / פייבוקס / העברה בנקאית / מזומן (לשליח, אחרי אישור שתואם ללו"ז) - אתה צריך לבקש ממנו שם מלא, כתובת מלאה (כולל עיר) וטלפון למשלוח, כי הפרטים האלה לא מוזנים באף מקום אחר
-- אם הלקוח משלם באשראי באתר, או באשראי טלפוני - אל תבקש ממנו שם/כתובת/טלפון! הפרטים האלה יוזנו ישירות באתר (בתשלום אשראי באתר) או ע"י הנציג בטלפון (באשראי טלפוני) - זה כפול ומבלבל אם תבקש את זה גם אתה
+תהליך סגירת הזמנה - שים לב לסדר המדויק, זה חשוב:
+
+אם הלקוח משלם באשראי באתר, או באשראי טלפוני:
+- אל תבקש ממנו שם/כתובת/טלפון! הפרטים האלה יוזנו ישירות באתר (בתשלום אשראי באתר) או ע"י הנציג בטלפון (באשראי טלפוני). אל תשלח [ORDER_COMPLETE] במקרה הזה - הבעלים רואה את ההזמנה בממשק האתר.
+
+אם הלקוח משלם בביט / פייבוקס / העברה בנקאית - בשני שלבים בסדר הזה:
+1. בקש ממנו לשלוח צילום מסך של אישור ההעברה. אל תבקש פרטי משלוח עדיין!
+2. רק אחרי שהלקוח שלח צילום מסך (תמונה) - בקש ממנו שם מלא, כתובת מלאה (כולל עיר) וטלפון למשלוח
+3. רק אחרי שיש גם צילום מסך וגם פרטי משלוח מלאים - כתוב בתשובתך תג [ORDER_COMPLETE: סיכום ההזמנה] עם כל הפרטים (מוצרים שהוזמנו, צבעים, מידות, כמות, מחיר סופי, אמצעי תשלום, שם הלקוח, כתובת, טלפון)
+
+אם הלקוח משלם במזומן (אחרי שהבעלים אישר לך את זה בהודעה רגילה בשיחה) - בשני שלבים:
+1. בקש ממנו שם מלא, כתובת מלאה וטלפון למשלוח
+2. רק אחרי שיש פרטי משלוח מלאים - כתוב בתשובתך תג [ORDER_COMPLETE: סיכום ההזמנה] עם כל הפרטים (כמו לעיל, אמצעי תשלום: מזומן)
+
+פורמט תג ה-ORDER_COMPLETE: כתוב סיכום מלא וברור בתוך התג עצמו, למשל:
+[ORDER_COMPLETE: 2 חולצות בצבע שחור ולבן, מידה L, 450 ₪ + 35 ₪ משלוח. תשלום: ביט. לקוח: יוסי כהן, רחוב הרצל 5 תל אביב, טלפון 0501234567]
+התג הזה לא מוצג ללקוח - הוא נשלח אוטומטית לבעלים. תוכל בנוסף לכתוב הודעת סיום רגילה ללקוח (כמו "תודה! ההזמנה נקלטה, נשלח אליך בקרוב").
 
 החזרות והחלפות:
 - ניתן להחזיר/להחליף באמצעות שליחויות או הגעה פיזית למחסן בצופים בתיאום מראש
@@ -694,6 +708,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     const escalateMatch = reply.match(/\[ESCALATE(?::\s*(.+?))?\]/);
+    const orderCompleteMatch = reply.match(/\[ORDER_COMPLETE:\s*(.+?)\]/s);
 
     if (escalateMatch) {
       await incrementStat('total_escalations');
@@ -713,9 +728,25 @@ app.post('/webhook', async (req, res) => {
         await appendConversation(from, 'assistant', GREETING_TEXT);
       }
 
-      const { cleanText } = extractImageTags(reply);
-      await appendConversation(from, 'assistant', cleanText || reply);
-      await sendReplyWithImages(from, reply);
+      // Strip [ORDER_COMPLETE: ...] from the customer-facing reply before sending images/text
+      let customerFacingReply = reply;
+      if (orderCompleteMatch) {
+        customerFacingReply = reply.replace(orderCompleteMatch[0], '').replace(/[ \t]+\n/g, '\n').trim();
+      }
+
+      const { cleanText } = extractImageTags(customerFacingReply);
+      await appendConversation(from, 'assistant', cleanText || customerFacingReply);
+      if (customerFacingReply) {
+        await sendReplyWithImages(from, customerFacingReply);
+      }
+
+      if (orderCompleteMatch) {
+        const orderSummary = orderCompleteMatch[1].trim();
+        await sendWhatsAppMessage(
+          OWNER_PHONE,
+          `✅ *הזמנה נסגרה*\n\n👤 לקוח: ${from}\n📦 סיכום: ${orderSummary}`
+        );
+      }
 
       if (isFirstMessageInConversation) {
         // Fixed structured sequence: full gallery -> colors text -> multicolor image (last)
