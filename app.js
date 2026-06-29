@@ -9,6 +9,7 @@ const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const OWNER_PHONE = process.env.OWNER_PHONE || "972543184416";
 const DATABASE_URL = process.env.DATABASE_URL;
+const TRANSCRIPTS_PASSWORD = process.env.TRANSCRIPTS_PASSWORD || "mygift2025";
 
 // ===== PostgreSQL connection =====
 const pool = new Pool({
@@ -143,6 +144,32 @@ async function appendConversation(phone, role, content) {
     `INSERT INTO conversation_log (phone, role, content) VALUES ($1, $2, $3)`,
     [phone, role, content]
   );
+}
+
+// List distinct customers (excluding the owner) with their last message and last activity time,
+// ordered by most recent activity first - used for the /transcripts overview page.
+async function getCustomerConversationSummaries() {
+  const res = await pool.query(
+    `SELECT phone,
+            MAX(created_at) AS last_activity,
+            (ARRAY_AGG(content ORDER BY id DESC))[1] AS last_message,
+            COUNT(*) AS message_count
+     FROM conversation_log
+     WHERE phone != $1
+     GROUP BY phone
+     ORDER BY last_activity DESC`,
+    [OWNER_PHONE]
+  );
+  return res.rows;
+}
+
+// Full transcript for a single phone number, in chronological order
+async function getFullTranscript(phone) {
+  const res = await pool.query(
+    `SELECT role, content, created_at FROM conversation_log WHERE phone = $1 ORDER BY id ASC`,
+    [phone]
+  );
+  return res.rows;
 }
 
 async function setPendingEscalation(phone, lastMessage, description) {
@@ -764,6 +791,123 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.get('/health', (req, res) => res.send('ok'));
+
+// ===== Transcripts viewer (simple password-protected HTML page) =====
+
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function checkTranscriptsPassword(req, res) {
+  const provided = req.query.password || '';
+  if (provided !== TRANSCRIPTS_PASSWORD) {
+    res.status(401).send(`
+      <html dir="rtl" lang="he"><body style="font-family: sans-serif; padding: 40px; text-align: center;">
+        <h2>נדרשת סיסמה</h2>
+        <form method="get">
+          <input type="password" name="password" placeholder="סיסמה" style="padding: 8px; font-size: 16px;" />
+          <button type="submit" style="padding: 8px 16px; font-size: 16px;">כניסה</button>
+        </form>
+      </body></html>
+    `);
+    return false;
+  }
+  return true;
+}
+
+app.get('/transcripts', async (req, res) => {
+  if (!checkTranscriptsPassword(req, res)) return;
+  try {
+    const summaries = await getCustomerConversationSummaries();
+    const rows = summaries.map(s => {
+      const lastMsgPreview = escapeHtml((s.last_message || '').slice(0, 80));
+      const lastActivity = new Date(s.last_activity).toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' });
+      return `
+        <tr>
+          <td><a href="/transcripts/${encodeURIComponent(s.phone)}?password=${encodeURIComponent(TRANSCRIPTS_PASSWORD)}">${escapeHtml(s.phone)}</a></td>
+          <td>${lastActivity}</td>
+          <td>${s.message_count}</td>
+          <td style="max-width: 400px; overflow: hidden; text-overflow: ellipsis;">${lastMsgPreview}</td>
+        </tr>`;
+    }).join('');
+
+    res.send(`
+      <html dir="rtl" lang="he">
+      <head>
+        <meta charset="utf-8" />
+        <title>שיחות הסוכן - My Gift</title>
+        <style>
+          body { font-family: sans-serif; padding: 20px; background: #f5f5f5; }
+          h1 { color: #333; }
+          table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+          th, td { padding: 12px; text-align: right; border-bottom: 1px solid #eee; }
+          th { background: #25D366; color: white; }
+          tr:hover { background: #f9f9f9; }
+          a { color: #075E54; text-decoration: none; font-weight: bold; }
+        </style>
+      </head>
+      <body>
+        <h1>📋 שיחות עם לקוחות (${summaries.length})</h1>
+        <table>
+          <tr><th>מספר טלפון</th><th>פעילות אחרונה</th><th>מס' הודעות</th><th>הודעה אחרונה</th></tr>
+          ${rows || '<tr><td colspan="4">אין שיחות עדיין</td></tr>'}
+        </table>
+      </body>
+      </html>
+    `);
+  } catch (e) {
+    console.error('Transcripts list error:', e);
+    res.status(500).send('שגיאה בטעינת השיחות');
+  }
+});
+
+app.get('/transcripts/:phone', async (req, res) => {
+  if (!checkTranscriptsPassword(req, res)) return;
+  try {
+    const phone = req.params.phone;
+    const messages = await getFullTranscript(phone);
+
+    const bubbles = messages.map(m => {
+      const isCustomer = m.role === 'user';
+      const time = new Date(m.created_at).toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' });
+      const align = isCustomer ? 'flex-start' : 'flex-end';
+      const bg = isCustomer ? '#fff' : '#DCF8C6';
+      return `
+        <div style="display: flex; justify-content: ${align}; margin-bottom: 8px;">
+          <div style="background: ${bg}; padding: 10px 14px; border-radius: 8px; max-width: 70%; box-shadow: 0 1px 2px rgba(0,0,0,0.1);">
+            <div style="white-space: pre-wrap;">${escapeHtml(m.content)}</div>
+            <div style="font-size: 11px; color: #888; margin-top: 4px;">${time}</div>
+          </div>
+        </div>`;
+    }).join('');
+
+    res.send(`
+      <html dir="rtl" lang="he">
+      <head>
+        <meta charset="utf-8" />
+        <title>שיחה עם ${escapeHtml(phone)}</title>
+        <style>
+          body { font-family: sans-serif; padding: 20px; background: #ECE5DD; max-width: 800px; margin: 0 auto; }
+          h1 { color: #075E54; }
+          a.back { display: inline-block; margin-bottom: 16px; color: #075E54; }
+        </style>
+      </head>
+      <body>
+        <a class="back" href="/transcripts?password=${encodeURIComponent(TRANSCRIPTS_PASSWORD)}">← חזרה לרשימה</a>
+        <h1>שיחה עם ${escapeHtml(phone)}</h1>
+        ${bubbles || '<p>אין הודעות</p>'}
+      </body>
+      </html>
+    `);
+  } catch (e) {
+    console.error('Transcript detail error:', e);
+    res.status(500).send('שגיאה בטעינת השיחה');
+  }
+});
 
 initDb()
   .then(() => {
