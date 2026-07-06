@@ -109,6 +109,18 @@ async function initDb() {
       value BIGINT DEFAULT 0
     );
   `);
+  // Deduplication table: prevents processing the same message twice
+  // (happens with Click-to-WhatsApp ads that sometimes fire the webhook twice)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS processed_messages (
+      message_id TEXT PRIMARY KEY,
+      processed_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  // Auto-cleanup: delete dedup records older than 24 hours (they're only needed briefly)
+  await pool.query(`
+    DELETE FROM processed_messages WHERE processed_at < now() - interval '24 hours';
+  `);
   await pool.query(`
     INSERT INTO stats (key, value) VALUES ('total_messages', 0), ('total_escalations', 0)
     ON CONFLICT (key) DO NOTHING;
@@ -614,6 +626,22 @@ app.post('/webhook', async (req, res) => {
     const change = entry?.changes?.[0];
     const message = change?.value?.messages?.[0];
     if (!message) return;
+
+    // Deduplication: skip if we already processed this exact message ID recently
+    // (Click-to-WhatsApp ads sometimes fire the webhook twice for the same message)
+    const messageId = message.id;
+    if (messageId) {
+      try {
+        await pool.query(
+          `INSERT INTO processed_messages (message_id) VALUES ($1)`,
+          [messageId]
+        );
+      } catch (dupErr) {
+        // Unique constraint violation = already processed this message, skip it
+        console.log(`Duplicate message skipped: ${messageId}`);
+        return;
+      }
+    }
 
     const from = message.from;
 
