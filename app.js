@@ -65,8 +65,26 @@ function interpolateAnchor(height) {
   return { sizeIdx: SIZES_ORDER.indexOf(size), avgWeight: avgW };
 }
 
-// Returns { oversized: 'XL', fitted: 'L' } for given height (meters) and weight (kg)
+// Returns { oversized, fitted } for given height (meters) and weight (kg)
+// Special rules for tall heights override the general interpolation.
 function calculateSize(heightM, weightKg) {
+  // 1.87m–1.95m special rule
+  if (heightM >= 1.87 && heightM <= 1.95) {
+    if (weightKg <= 80)  return { oversized: 'XL',  fitted: 'L'   };
+    if (weightKg <= 95)  return { oversized: 'XXL', fitted: 'XL'  };
+    if (weightKg <= 120) return { oversized: '3XL', fitted: 'XXL' };
+    return { oversized: 'ESCALATE', fitted: 'ESCALATE' };
+  }
+
+  // 1.83m–1.86m special rule
+  if (heightM >= 1.83 && heightM < 1.87) {
+    if (weightKg <= 90)  return { oversized: 'XL',  fitted: 'L'   };
+    if (weightKg <= 115) return { oversized: 'XXL', fitted: 'XL'  };
+    if (weightKg <= 130) return { oversized: '3XL', fitted: 'XXL' };
+    return { oversized: 'ESCALATE', fitted: 'ESCALATE' };
+  }
+
+  // General interpolation for heights up to ~1.82m
   const { sizeIdx, avgWeight } = interpolateAnchor(heightM);
   const diff = weightKg - avgWeight;
   const shift = Math.round(diff / WEIGHT_STEP_KG);
@@ -242,6 +260,10 @@ const BASE_SYSTEM_PROMPT = `אתה סוכן שירות לקוחות מקצועי
 ענה תמיד בעברית בלבד, בצורה חמה, ידידותית ומקצועית.
 חשוב מאוד: אל תשנה שפה גם אם הלקוח כתב בשפה אחרת — המשך בעברית. רק אם הלקוח מבקש במפורש לדבר בשפה אחרת ("please answer in English" / "ענה לי באנגלית" וכדומה) — אפשר לעבור לאותה שפה ולהישאר בה לאורך כל השיחה. לעולם אל תערבב שפות בתשובה אחת.
 
+איחולים לפי יום בשבוע:
+- "שבת שלום" / "שבת טוב" — מתאים רק מיום חמישי ואילך (חמישי, שישי, שבת). אל תכתוב איחול שכזה ביום ראשון, שני, שלישי או רביעי — זה לא מדויק ולא מקצועי.
+- ביום ראשון לאחר שבת — אפשר "שבוע טוב" במידה ומתאים לשיחה, אבל לא חובה.
+
 מידע על המוצרים והמחירים:
 - חולצת ציצית מהודרת ואופנתית — 250 ₪ ליחידה
 - 2 חולצות — 450 ₪
@@ -276,6 +298,7 @@ const BASE_SYSTEM_PROMPT = `אתה סוכן שירות לקוחות מקצועי
 אם הלקוח כבר נתן גובה ומשקל בהודעה קודמת בשיחה ושאל שאלת המשך, אפשר להשתמש בתג שוב עם אותם נתונים כדי לקבל את המידה המדויקת מחדש - אל תסתמך על זיכרון של תשובה קודמת.
 אם הלקוח אומר שהוא מעדיף לבישה צמודה יחסית ולא רוצה אוברסייז - המערכת תחזיר לך גם את המידה ל"צמוד" וגם ל"אוברסייז", תבחר את המתאימה.
 אם הנתונים שהלקוח שלח לא הגיוניים בעליל (גובה/משקל לא אפשריים) — כתוב [ESCALATE: לקוח עם מידות לא סטנדרטיות, גובה X משקל Y]
+אם המידה שמחזירה המערכת היא [ESCALATE] עקב מידות מחוץ לטווח (משקל מעל 140 ק"ג או גובה מעל 1.95 מטר) — אמור ללקוח שאתה בודק עם המנהל אם המידה הגדולה ביותר שלנו (3XL) תתאים לו, ואל תתן המלצת מידה עצמאית
 
 תהליך הזמנה בוואטסאפ:
 1. בקש מהלקוח לשלוח גובה ומשקל להתאמת מידה (אם לא יודע את מידתו)
@@ -738,7 +761,24 @@ app.post('/webhook', async (req, res) => {
       const weightKg = parseFloat(sizeCalcMatch[2]);
 
       if (!isNaN(heightM) && !isNaN(weightKg) && heightM > 1.0 && heightM < 2.5 && weightKg > 20 && weightKg < 300) {
+        // Global limits: weight > 130kg or height > 1.95m -> always escalate
+        // Special height ranges (1.83-1.95) have their own internal limits inside calculateSize
+        const exceedsLimit = weightKg > 130 || heightM > 1.95;
+        if (exceedsLimit) {
+          reply = reply.replace(
+            sizeCalcMatch[0],
+            `[ESCALATE: לקוח עם מידות מחוץ לטווח המלאי הרגיל — גובה ${heightM}מ' משקל ${weightKg}ק"ג. המידה הגדולה ביותר שלנו היא 3XL, צריך לבדוק אם זה מתאים]`
+          );
+        } else {
         const { oversized, fitted } = calculateSize(heightM, weightKg);
+
+        // calculateSize may itself return ESCALATE for specific height/weight combos
+        if (oversized === 'ESCALATE') {
+          reply = reply.replace(
+            sizeCalcMatch[0],
+            `[ESCALATE: לקוח עם מידות מחוץ לטווח המלאי הרגיל — גובה ${heightM}מ' משקל ${weightKg}ק"ג. המידה הגדולה ביותר שלנו היא 3XL, צריך לבדוק אם זה מתאים]`
+          );
+        } else {
 
         const followUpHistory = [
           ...history,
@@ -765,6 +805,8 @@ app.post('/webhook', async (req, res) => {
         });
         const followUpData = await followUpRes.json();
         reply = followUpData.content?.[0]?.text || reply;
+        } // end else (not ESCALATE from calculateSize)
+        } // end else (not exceedsLimit)
       } else {
         // Unrealistic numbers - let the escalate path handle it
         reply = reply.replace(sizeCalcMatch[0], '[ESCALATE: נתוני גובה/משקל לא הגיוניים]');
