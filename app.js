@@ -176,20 +176,33 @@ async function appendConversation(phone, role, content) {
   );
 }
 
-// List distinct customers (excluding the owner) with their last message and last activity time,
-// ordered by most recent activity first - used for the /transcripts overview page.
-async function getCustomerConversationSummaries() {
-  const res = await pool.query(
-    `SELECT phone,
-            MAX(created_at) AS last_activity,
-            (ARRAY_AGG(content ORDER BY id DESC))[1] AS last_message,
-            COUNT(*) AS message_count
-     FROM conversation_log
-     WHERE phone != $1
-     GROUP BY phone
-     ORDER BY last_activity DESC`,
-    [OWNER_PHONE]
-  );
+// List distinct customers with optional search by phone or message content
+async function getCustomerConversationSummaries(search = '') {
+  const searchParam = search ? `%${search}%` : null;
+  const res = searchParam
+    ? await pool.query(
+        `SELECT phone,
+                MAX(created_at) AS last_activity,
+                (ARRAY_AGG(content ORDER BY id DESC))[1] AS last_message,
+                COUNT(*) AS message_count
+         FROM conversation_log
+         WHERE phone != $1
+           AND (phone ILIKE $2 OR content ILIKE $2)
+         GROUP BY phone
+         ORDER BY last_activity DESC`,
+        [OWNER_PHONE, searchParam]
+      )
+    : await pool.query(
+        `SELECT phone,
+                MAX(created_at) AS last_activity,
+                (ARRAY_AGG(content ORDER BY id DESC))[1] AS last_message,
+                COUNT(*) AS message_count
+         FROM conversation_log
+         WHERE phone != $1
+         GROUP BY phone
+         ORDER BY last_activity DESC`,
+        [OWNER_PHONE]
+      );
   return res.rows;
 }
 
@@ -901,16 +914,19 @@ function checkTranscriptsPassword(req, res) {
 app.get('/transcripts', async (req, res) => {
   if (!checkTranscriptsPassword(req, res)) return;
   try {
-    const summaries = await getCustomerConversationSummaries();
+    const search = (req.query.search || '').trim();
+    const summaries = await getCustomerConversationSummaries(search);
+    const pw = encodeURIComponent(TRANSCRIPTS_PASSWORD);
+
     const rows = summaries.map(s => {
       const lastMsgPreview = escapeHtml((s.last_message || '').slice(0, 80));
       const lastActivity = new Date(s.last_activity).toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' });
       return `
         <tr>
-          <td><a href="/transcripts/${encodeURIComponent(s.phone)}?password=${encodeURIComponent(TRANSCRIPTS_PASSWORD)}">${escapeHtml(s.phone)}</a></td>
+          <td><a href="/transcripts/${encodeURIComponent(s.phone)}?password=${pw}">${escapeHtml(s.phone)}</a></td>
           <td>${lastActivity}</td>
           <td>${s.message_count}</td>
-          <td style="max-width: 400px; overflow: hidden; text-overflow: ellipsis;">${lastMsgPreview}</td>
+          <td style="max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${lastMsgPreview}</td>
         </tr>`;
     }).join('');
 
@@ -921,19 +937,32 @@ app.get('/transcripts', async (req, res) => {
         <title>שיחות הסוכן - My Gift</title>
         <style>
           body { font-family: sans-serif; padding: 20px; background: #f5f5f5; }
-          h1 { color: #333; }
-          table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+          h1 { color: #333; margin-bottom: 12px; }
+          .search-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+          .search-bar input { flex: 1; padding: 10px 14px; font-size: 15px; border: 1px solid #ccc; border-radius: 6px; }
+          .search-bar button { padding: 10px 20px; background: #25D366; color: white; border: none; border-radius: 6px; font-size: 15px; cursor: pointer; }
+          .search-bar a { padding: 10px 14px; color: #666; text-decoration: none; font-size: 14px; align-self: center; }
+          table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden; }
           th, td { padding: 12px; text-align: right; border-bottom: 1px solid #eee; }
           th { background: #25D366; color: white; }
-          tr:hover { background: #f9f9f9; }
+          tr:last-child td { border-bottom: none; }
+          tr:hover td { background: #f9f9f9; }
           a { color: #075E54; text-decoration: none; font-weight: bold; }
+          .result-count { color: #666; font-size: 14px; margin-bottom: 8px; }
         </style>
       </head>
       <body>
-        <h1>📋 שיחות עם לקוחות (${summaries.length})</h1>
+        <h1>📋 שיחות עם לקוחות</h1>
+        <form class="search-bar" method="get" action="/transcripts">
+          <input type="hidden" name="password" value="${escapeHtml(TRANSCRIPTS_PASSWORD)}" />
+          <input type="text" name="search" value="${escapeHtml(search)}" placeholder="חיפוש לפי מספר טלפון או תוכן הודעה..." autofocus />
+          <button type="submit">🔍 חפש</button>
+          ${search ? `<a href="/transcripts?password=${pw}">✕ נקה</a>` : ''}
+        </form>
+        <p class="result-count">${search ? `נמצאו ${summaries.length} תוצאות עבור "${escapeHtml(search)}"` : `סה"כ ${summaries.length} שיחות`}</p>
         <table>
-          <tr><th>מספר טלפון</th><th>פעילות אחרונה</th><th>מס' הודעות</th><th>הודעה אחרונה</th></tr>
-          ${rows || '<tr><td colspan="4">אין שיחות עדיין</td></tr>'}
+          <tr><th>מספר טלפון</th><th>פעילות אחרונה</th><th>הודעות</th><th>הודעה אחרונה</th></tr>
+          ${rows || `<tr><td colspan="4" style="text-align:center; color:#999; padding:24px;">${search ? 'לא נמצאו תוצאות' : 'אין שיחות עדיין'}</td></tr>`}
         </table>
       </body>
       </html>
