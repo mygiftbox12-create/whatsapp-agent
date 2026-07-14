@@ -491,6 +491,10 @@ async function sendWhatsAppImage(to, imageUrl, caption = '') {
     if (!res.ok) {
       const errText = await res.text();
       console.error('WhatsApp image send error:', res.status, errText);
+    } else {
+      // Log a compact image reference to the conversation (just the filename, not the full URL)
+      const imageName = imageUrl.split('/').pop().replace(/\.[^.]+$/, ''); // e.g. "shirt-black"
+      await appendConversation(to, 'assistant', `[📷 תמונה: ${imageName}]`);
     }
   } catch (e) {
     console.error('WhatsApp image send exception:', e);
@@ -987,7 +991,7 @@ app.get('/transcripts/:phone', async (req, res) => {
       return `
         <div style="display: flex; justify-content: ${align}; margin-bottom: 8px;">
           <div style="background: ${bg}; padding: 10px 14px; border-radius: 8px; max-width: 70%; box-shadow: 0 1px 2px rgba(0,0,0,0.1);">
-            <div style="white-space: pre-wrap;">${escapeHtml(m.content)}</div>
+            <div style="white-space: pre-wrap;">${escapeHtml(m.content).replace(/\[📷 תמונה: ([^\]]+)\]/g, '<span style="display:inline-block;background:#e3f2fd;color:#1565c0;border-radius:4px;padding:2px 8px;font-size:12px;margin:2px 0;">📷 $1</span>')}</div>
             <div style="font-size: 11px; color: #888; margin-top: 4px;">${time}</div>
           </div>
         </div>`;
