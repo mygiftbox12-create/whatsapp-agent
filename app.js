@@ -888,6 +888,153 @@ app.post('/webhook', async (req, res) => {
 
 app.get('/health', (req, res) => res.send('ok'));
 
+// ===== Follow-up: find customers with no reply in a given time window =====
+
+async function getUnansweredCustomers(hoursAgo = 48) {
+  const res = await pool.query(
+    `SELECT DISTINCT cl.phone,
+            MIN(cl.created_at) AS first_msg,
+            (ARRAY_AGG(cl.content ORDER BY cl.id ASC))[1] AS first_message
+     FROM conversation_log cl
+     WHERE cl.phone != $1
+       AND cl.role = 'user'
+       AND cl.created_at > NOW() - ($2 || ' hours')::INTERVAL
+       AND cl.phone NOT IN (
+         SELECT DISTINCT phone FROM conversation_log
+         WHERE role = 'assistant'
+           AND created_at > NOW() - ($2 || ' hours')::INTERVAL
+       )
+     GROUP BY cl.phone
+     ORDER BY first_msg ASC`,
+    [OWNER_PHONE, hoursAgo]
+  );
+  return res.rows;
+}
+
+// Show unanswered customers page
+app.get('/followup', async (req, res) => {
+  if (!checkTranscriptsPassword(req, res)) return;
+  try {
+    const hours = parseInt(req.query.hours || '48', 10);
+    const customers = await getUnansweredCustomers(hours);
+    const pw = encodeURIComponent(TRANSCRIPTS_PASSWORD);
+
+    const rows = customers.map(c => {
+      const time = new Date(c.first_msg).toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' });
+      const preview = escapeHtml((c.first_message || '').slice(0, 60));
+      return `
+        <tr>
+          <td>${escapeHtml(c.phone)}</td>
+          <td>${time}</td>
+          <td>${preview}</td>
+          <td>
+            <button onclick="sendOne('${escapeHtml(c.phone)}')" style="padding:4px 12px;background:#25D366;color:white;border:none;border-radius:4px;cursor:pointer;">
+              שלח ✉️
+            </button>
+          </td>
+        </tr>`;
+    }).join('');
+
+    res.send(`
+      <html dir="rtl" lang="he">
+      <head>
+        <meta charset="utf-8"/>
+        <title>פניות ללא מענה</title>
+        <style>
+          body { font-family: sans-serif; padding: 20px; background: #f5f5f5; }
+          h1 { color: #333; }
+          table { width:100%; border-collapse:collapse; background:white; border-radius:8px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.1); }
+          th,td { padding:10px 14px; text-align:right; border-bottom:1px solid #eee; }
+          th { background:#25D366; color:white; }
+          tr:last-child td { border-bottom:none; }
+          .controls { display:flex; gap:10px; margin-bottom:16px; align-items:center; flex-wrap:wrap; }
+          .controls select,.controls button,.controls a { padding:8px 14px; border-radius:6px; font-size:14px; cursor:pointer; }
+          .controls select { border:1px solid #ccc; }
+          .btn-green { background:#25D366; color:white; border:none; }
+          .btn-red { background:#e53935; color:white; border:none; }
+          .btn-back { background:white; border:1px solid #ccc; text-decoration:none; color:#333; }
+          #status { margin-top:12px; padding:10px; border-radius:6px; display:none; }
+        </style>
+      </head>
+      <body>
+        <h1>📭 פניות ללא מענה</h1>
+        <div class="controls">
+          <a class="btn-back" href="/transcripts?password=${pw}">← חזרה לשיחות</a>
+          <select id="hours" onchange="location.href='/followup?password=${pw}&hours='+this.value">
+            <option value="24" ${hours===24?'selected':''}>24 שעות אחרונות</option>
+            <option value="48" ${hours===48?'selected':''}>48 שעות אחרונות</option>
+            <option value="72" ${hours===72?'selected':''}>72 שעות אחרונות</option>
+          </select>
+          <span style="color:#666;font-size:14px;">${customers.length} לקוחות ללא מענה</span>
+          ${customers.length > 0 ? `<button class="btn-green" onclick="sendAll()">שלח לכולם ✉️</button>` : ''}
+        </div>
+
+        <table>
+          <tr><th>מספר טלפון</th><th>זמן פנייה</th><th>הודעה ראשונה</th><th>פעולה</th></tr>
+          ${rows || '<tr><td colspan="4" style="text-align:center;color:#999;padding:24px;">אין פניות ללא מענה 🎉</td></tr>'}
+        </table>
+        <div id="status"></div>
+
+        <script>
+          const PW = '${escapeHtml(TRANSCRIPTS_PASSWORD)}';
+
+          async function sendOne(phone) {
+            const msg = prompt('הודעה לשלוח ל-' + phone + ':', 'היי! ראינו שפנית אלינו ולא קיבלת מענה. אנחנו מצטערים על העיכוב — איך נוכל לעזור? 😊');
+            if (!msg) return;
+            await doSend([phone], msg);
+          }
+
+          async function sendAll() {
+            const phones = ${JSON.stringify(customers.map(c => c.phone))};
+            const msg = prompt('הודעה לשלוח לכל ' + phones.length + ' לקוחות:', 'היי! ראינו שפנית אלינו ולא קיבלת מענה. אנחנו מצטערים על העיכוב — איך נוכל לעזור? 😊');
+            if (!msg) return;
+            await doSend(phones, msg);
+          }
+
+          async function doSend(phones, msg) {
+            const status = document.getElementById('status');
+            status.style.display = 'block';
+            status.style.background = '#fff3cd';
+            status.textContent = 'שולח... 0/' + phones.length;
+            let ok = 0, fail = 0;
+            for (const phone of phones) {
+              const r = await fetch('/followup/send', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({ phone, message: msg, password: PW })
+              });
+              if (r.ok) ok++; else fail++;
+              status.textContent = 'שולח... ' + (ok+fail) + '/' + phones.length;
+            }
+            status.style.background = fail === 0 ? '#d4edda' : '#f8d7da';
+            status.textContent = '✅ נשלח ל-' + ok + ' לקוחות' + (fail > 0 ? ' | ❌ נכשל: ' + fail : '');
+          }
+        </script>
+      </body>
+      </html>
+    `);
+  } catch (e) {
+    console.error('Followup error:', e);
+    res.status(500).send('שגיאה');
+  }
+});
+
+// API endpoint to send a single follow-up message
+app.post('/followup/send', async (req, res) => {
+  const { phone, message, password } = req.body;
+  if (password !== TRANSCRIPTS_PASSWORD) return res.status(401).json({ error: 'Unauthorized' });
+  if (!phone || !message) return res.status(400).json({ error: 'Missing phone or message' });
+  try {
+    await sendWhatsAppMessage(phone, message);
+    await appendConversation(phone, 'assistant', `[📤 הודעת מעקב ידנית]: ${message}`);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Followup send error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
 // ===== Transcripts viewer (simple password-protected HTML page) =====
 
 function escapeHtml(str) {
@@ -957,6 +1104,9 @@ app.get('/transcripts', async (req, res) => {
       </head>
       <body>
         <h1>📋 שיחות עם לקוחות</h1>
+        <div style="display:flex; gap:10px; margin-bottom:4px; flex-wrap:wrap;">
+          <a href="/followup?password=${pw}" style="padding:8px 14px;background:#e53935;color:white;border-radius:6px;text-decoration:none;font-size:14px;">📭 פניות ללא מענה</a>
+        </div>
         <form class="search-bar" method="get" action="/transcripts">
           <input type="hidden" name="password" value="${escapeHtml(TRANSCRIPTS_PASSWORD)}" />
           <input type="text" name="search" value="${escapeHtml(search)}" placeholder="חיפוש לפי מספר טלפון או תוכן הודעה..." autofocus />
