@@ -381,7 +381,7 @@ const BASE_SYSTEM_PROMPT = `אתה סוכן שירות לקוחות מקצועי
 - חשוב: אין תמונה של חולצה בודדת בצבע "כחול נייבי" - יש רק תמונה של הסט בנייבי. אם לקוח מבקש לראות חולצה בודדת בנייבי, הסבר לו שאין כרגע תמונה מצולמת של חולצה בודדת בצבע הזה, אבל אפשר להראות לו את הסט בנייבי [IMAGE: set-navy] לקבלת מושג על הצבע
 - ניתן לשלב כמה תגי תמונה בתשובה אחת אם הלקוח מבקש כמה צבעים
 - לצבע "שמנת" אין כרגע תמונה מצולמת (לא לחולצה בודדת ולא לסט) - אם מתבקש, הסבר שאין דגם מצולם של הצבע הזה כרגע אבל הוא קיים במלאי
-- דגמים מודפסים - אפשר לשלוח תמונה של כל דגם כשלקוח מבקש לראות אותו או שואל על הדגמים: [IMAGE: model-148] (דגם 148 - להבה על הגב), [IMAGE: model-yamsuf] (קריעת ים סוף), [IMAGE: model-bridge] (גשר צר מאוד), [IMAGE: model-770-back] (גב דגם 770), [IMAGE: model-770-front] (חזית דגם 770), [IMAGE: model-770-wick] (תקריב הפתיל הכחול-לבן של דגם 770)
+- דגמים - אפשר לשלוח תמונה של כל דגם כשלקוח מבקש לראות אותו: [IMAGE: model-plain] (חולצות חלקות עם סמל קטן), [IMAGE: model-bridge] (גשר צר מאוד), [IMAGE: model-148] (דגם 148 - להבה על הגב), [IMAGE: model-770-back] (דגם 770), [IMAGE: model-yamsuf] (קריעת ים סוף)
 - בתמונות הדגמים המצולמים: דגם 148 (חום בהיר, כחול כהה, שחור, שמנת), קריעת ים סוף (שחור, אפור בהיר, לבן, שמנת), גשר צר מאוד (שחור, לבן, חום בהיר), דגם 770 (לבן). אם לקוח שואל על זמינות צבע/מידה שלא מופיעים כאן, אל תנחש - כתוב [ESCALATE: לקוח שואל על זמינות בדגם X]
 - מחיר הדגמים המודפסים כמו חולצה רגילה: 250 ₪, פרט לדגם 770 שמחירו 300 ₪
 - שלב את תג התמונה בטבעיות בתוך הטקסט, למשל: "בטח! הנה איך נראית בשחור [IMAGE: black] יפה מאוד, נכון?"
@@ -419,13 +419,19 @@ async function buildSystemPrompt(isFirstMessage = false) {
   let prompt = BASE_SYSTEM_PROMPT;
 
   if (isFirstMessage) {
-    prompt += `\n\nהערה לתשובה הזו בלבד: זו ההודעה הראשונה של הלקוח הזה אי פעם.
-המערכת כבר שולחת לפניך אוטומטית הודעת פתיחה קבועה: "היי מה שלומך, התעניינת בחולצות ציצית? שולח פרטים 😊" - אל תכתוב אתה הודעת פתיחה/ברכה דומה, התשובה שלך היא ההודעה הבאה אחריה.
-כתוב כעת תשובה קצרה שמתמקדת במחירי החולצות הבודדות בלבד (250 ₪ ליחידה, מחיר קבוע ללא מבצעים; משלוח חינם מ-2 חולצות ומעלה) - אל תזכיר סטים בשלב הזה אלא אם הלקוח שאל על מכנסיים/סט במפורש.
-אחרי שתשלח את התשובה הזו, המערכת תשלח אוטומטית (לא אתה) רצף קבוע: תמונות של כל הצבעים (חולצות וסטים), ואז הודעת טקסט עם רשימת הצבעים הזמינים, ואז תמונת הקולקציה הכללית. אל תכתוב בעצמך תגי [IMAGE] בתשובה הזו ואל תפרט את רשימת הצבעים בעצמך - זה כבר יישלח אוטומטית אחריך.`;
+    prompt += `\n\nהערה לתשובה הזו בלבד: זו ההודעה הראשונה של הלקוח הזה, והיא כוללת שאלה ספציפית. ענה ישירות ובקצרה על מה שנשאל, בלי ברכת פתיחה ארוכה ובלי לחזור על פרטים כלליים. אחרי התשובה שלך המערכת תשלח אוטומטית תמונות של הדגמים, לכן אל תכתוב בעצמך תגי [IMAGE] בתשובה הזו.`;
   } else {
     prompt += `\n\nהערה לתשובה הזו בלבד: זו לא ההודעה הראשונה של הלקוח הזה - המערכת לא תשלח תמונות פתיחה אוטומטיות הפעם. אל תגיד ללקוח שאתה "שולח תמונות" אלא אם כן אתה בעצמך כותב תג [IMAGE: ...] בתשובה שלך.`;
   }
+
+  prompt += `
+כללי סגנון וניסוח (חשובים מאוד, גוברים על כל הוראה אחרת בנושא סגנון):
+- כתוב בעברית פשוטה, תקנית וברורה, במשפטים קצרים. השתמש רק במילים שאתה בטוח בכתיבתן. אם אינך בטוח במילה, נסח אחרת.
+- אל תשתמש באימוג'י, חוץ מסמיילי אחד (🙂 או 😊) מדי פעם ובצורה טבעית, ולא בכל הודעה. לעולם אל תשלב אימוג'י בתוך מילה.
+- אל תשתמש בעיצוב Markdown: בלי כוכביות כפולות, בלי כותרות, בלי רשימות עם סימנים מיוחדים. טקסט רגיל בלבד, ואפשר שורה חדשה בין נושאים.
+- אל תמציא מידע. אם אינך יודע, כתוב [ESCALATE: ...].
+- כשהלקוח שואל שאלה שאין לך לגביה תשובה מלאה, או כשמתאים לסיים שיחה, אפשר להוסיף שאפשר גם להתקשר עם שאלות נוספות למספר 0543184416.
+`;
 
   if (updates.length > 0) {
     prompt += `\n\nעדכונים חדשים מהבעלים (מידע עדכני - תמיד תעדיף אותו על פני המידע שמעליו אם יש סתירה):\n${updates.map((u, i) => `${i + 1}. ${u.content}`).join('\n')}`;
@@ -459,36 +465,46 @@ const SET_IMAGE_MAP = {
 };
 // Merge into one lookup table used by extractImageTags/sendReplyWithImages
 const MODEL_IMAGE_MAP = {
-  'model-148': `${GITHUB_RAW_BASE}/model-148.jpeg`,
-  'model-yamsuf': `${GITHUB_RAW_BASE}/model-yamsuf.jpeg`,
+  'model-plain': `${GITHUB_RAW_BASE}/model-plain.jpeg`,
   'model-bridge': `${GITHUB_RAW_BASE}/model-bridge.jpeg`,
+  'model-148': `${GITHUB_RAW_BASE}/model-148.jpeg`,
   'model-770-back': `${GITHUB_RAW_BASE}/model-770-back.jpeg`,
-  'model-770-front': `${GITHUB_RAW_BASE}/model-770-front.jpeg`,
-  'model-770-wick': `${GITHUB_RAW_BASE}/model-770-wick.jpeg`
+  'model-yamsuf': `${GITHUB_RAW_BASE}/model-yamsuf.jpeg`
 };
 const ALL_IMAGE_MAP = { ...COLOR_IMAGE_MAP, ...SET_IMAGE_MAP, ...MODEL_IMAGE_MAP };
 
-// Full gallery sent automatically on a new conversation: every individual shirt color + every set color
-// (multicolor is sent separately, at the very end, after the colors text message)
-const WELCOME_GALLERY_URLS = [
-  `${GITHUB_RAW_BASE}/shirt-black.jpeg`,
-  `${GITHUB_RAW_BASE}/shirt-white.jpeg`,
-  `${GITHUB_RAW_BASE}/shirt-gray.jpeg`,
-  `${GITHUB_RAW_BASE}/shirt-stone.jpeg`,
-  `${GITHUB_RAW_BASE}/shirt-brown.jpeg`,
-  `${GITHUB_RAW_BASE}/shirt-lightbrown.jpeg`,
-  `${GITHUB_RAW_BASE}/set-black.jpeg`,
-  `${GITHUB_RAW_BASE}/set-white.jpeg`,
-  `${GITHUB_RAW_BASE}/set-lightbrown.jpeg`,
-  `${GITHUB_RAW_BASE}/set-navy.jpeg`,
-  `${GITHUB_RAW_BASE}/set-brown.jpeg`
+// Opening sequence for a new customer: ONE fixed text message, then the model photos (with short captions)
+const WELCOME_TEXT = `היי, תודה שפנית אלינו 🙂
+אצלנו חולצות ציצית מכותנה איכותית, בגזרת אוברסייז, עם פתיל עבה בקשירה ספרדית מהודרת.
+
+מחיר: 250 ₪ לחולצה (דגם 770 עם פתיל כחול: 300 ₪).
+משלוח עד הבית: 35 ₪, ומ-2 חולצות ומעלה המשלוח חינם. זמן אספקה עד 7 ימי עסקים, בדרך כלל תוך 5 ימים.
+
+מצורפות תמונות של הדגמים. כדי להמליץ על מידה מתאימה, שלח לי גובה ומשקל.
+אם יש שאלות נוספות אפשר גם להתקשר: 0543184416`;
+
+const WELCOME_IMAGES = [
+  { url: `${GITHUB_RAW_BASE}/model-plain.jpeg`, caption: 'חולצות חלקות עם סמל קטן' },
+  { url: `${GITHUB_RAW_BASE}/model-bridge.jpeg`, caption: 'דגם גשר צר מאוד' },
+  { url: `${GITHUB_RAW_BASE}/model-148.jpeg`, caption: 'דגם 148' },
+  { url: `${GITHUB_RAW_BASE}/model-770-back.jpeg`, caption: 'דגם 770 - הבית של הרבי (פתיל כחול)' },
+  { url: `${GITHUB_RAW_BASE}/model-yamsuf.jpeg`, caption: 'דגם קריעת ים סוף' }
 ];
-const WELCOME_MULTICOLOR_URL = `${GITHUB_RAW_BASE}/shirt-multicolor.jpeg`;
 
-const WELCOME_COLORS_TEXT = `צבעים זמינים:
-שחור, לבן, שמנת, אפור, כחול נייבי, אבן, חום כהה, חום בהיר
+async function sendWelcomeImages(to) {
+  for (const img of WELCOME_IMAGES) {
+    await sendWhatsAppImage(to, img.url, img.caption);
+  }
+}
 
-זמין לכל שאלה 🙏`;
+// A first message that is only a greeting / "send me info" (e.g. the ad's pre-filled text) gets just the fixed welcome, no LLM call
+function isGenericOpener(text) {
+  const t = String(text || '').replace(/[^\u0590-\u05FFa-zA-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (t.length > 60) return false;
+  const specific = /(מידה|גובה|משקל|צבע|משלוח|בד |קשירה|תכלת|סט|מכנס|שורט|770|148|ים סוף|גשר|כמה|מחיר|איפה|מהיכן|תשלום|החזר|החלפה)/;
+  if (specific.test(t)) return false;
+  return true;
+}
 
 async function sendWhatsAppImage(to, imageUrl, caption = '') {
   try {
@@ -518,7 +534,13 @@ async function sendWhatsAppImage(to, imageUrl, caption = '') {
   }
 }
 
+// WhatsApp bold is a single *asterisk*; convert Markdown **bold** (which Claude tends to write) so it does not show up literally
+function toWhatsAppFormat(text) {
+  return String(text).replace(/\*\*(.+?)\*\*/g, '*$1*');
+}
+
 async function sendWhatsAppMessage(to, text) {
+  text = toWhatsAppFormat(text);
   try {
     const res = await fetch(`https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`, {
       method: 'POST',
@@ -768,6 +790,13 @@ app.post('/webhook', async (req, res) => {
       // the old escalation stays open and the owner can still /reply to it separately.
     }
 
+    if (isFirstMessageInConversation && isGenericOpener(text)) {
+      await sendWhatsAppMessage(from, WELCOME_TEXT);
+      await appendConversation(from, 'assistant', WELCOME_TEXT);
+      await sendWelcomeImages(from);
+      return;
+    }
+
     const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -861,13 +890,6 @@ app.post('/webhook', async (req, res) => {
         `⚠️ *פנייה חדשה דורשת התערבות*\n\n👤 לקוח: ${from}\n💬 הודעה: "${text}"\n📋 סיכום: ${description}\n\nלענות: /reply ${from} <התשובה שלך>\nאם זה כלל קבוע להבא: /update <הכלל>`
       );
     } else {
-      if (isFirstMessageInConversation) {
-        // Fixed opening greeting - always sent first, exactly the same, before the agent's price reply
-        const GREETING_TEXT = 'היי מה שלומך,\nהתעניינת בחולצות ציצית?\nשולח פרטים 😊';
-        await sendWhatsAppMessage(from, GREETING_TEXT);
-        await appendConversation(from, 'assistant', GREETING_TEXT);
-      }
-
       // Strip [ORDER_COMPLETE: ...] from the customer-facing reply before sending images/text
       let customerFacingReply = reply;
       if (orderCompleteMatch) {
@@ -889,13 +911,7 @@ app.post('/webhook', async (req, res) => {
       }
 
       if (isFirstMessageInConversation) {
-        // Fixed structured sequence: full gallery -> colors text -> multicolor image (last)
-        for (const url of WELCOME_GALLERY_URLS) {
-          await sendWhatsAppImage(from, url);
-        }
-        await sendWhatsAppMessage(from, WELCOME_COLORS_TEXT);
-        await appendConversation(from, 'assistant', WELCOME_COLORS_TEXT);
-        await sendWhatsAppImage(from, WELCOME_MULTICOLOR_URL);
+        await sendWelcomeImages(from);
       }
     }
   } catch (e) {
