@@ -381,6 +381,9 @@ const BASE_SYSTEM_PROMPT = `אתה סוכן שירות לקוחות מקצועי
 - חשוב: אין תמונה של חולצה בודדת בצבע "כחול נייבי" - יש רק תמונה של הסט בנייבי. אם לקוח מבקש לראות חולצה בודדת בנייבי, הסבר לו שאין כרגע תמונה מצולמת של חולצה בודדת בצבע הזה, אבל אפשר להראות לו את הסט בנייבי [IMAGE: set-navy] לקבלת מושג על הצבע
 - ניתן לשלב כמה תגי תמונה בתשובה אחת אם הלקוח מבקש כמה צבעים
 - לצבע "שמנת" אין כרגע תמונה מצולמת (לא לחולצה בודדת ולא לסט) - אם מתבקש, הסבר שאין דגם מצולם של הצבע הזה כרגע אבל הוא קיים במלאי
+- דגמים מודפסים - אפשר לשלוח תמונה של כל דגם כשלקוח מבקש לראות אותו או שואל על הדגמים: [IMAGE: model-148] (דגם 148 - להבה על הגב), [IMAGE: model-yamsuf] (קריעת ים סוף), [IMAGE: model-bridge] (גשר צר מאוד), [IMAGE: model-770-back] (גב דגם 770), [IMAGE: model-770-front] (חזית דגם 770), [IMAGE: model-770-wick] (תקריב הפתיל הכחול-לבן של דגם 770)
+- בתמונות הדגמים המצולמים: דגם 148 (חום בהיר, כחול כהה, שחור, שמנת), קריעת ים סוף (שחור, אפור בהיר, לבן, שמנת), גשר צר מאוד (שחור, לבן, חום בהיר), דגם 770 (לבן). אם לקוח שואל על זמינות צבע/מידה שלא מופיעים כאן, אל תנחש - כתוב [ESCALATE: לקוח שואל על זמינות בדגם X]
+- מחיר הדגמים המודפסים כמו חולצה רגילה: 250 ₪, פרט לדגם 770 שמחירו 300 ₪
 - שלב את תג התמונה בטבעיות בתוך הטקסט, למשל: "בטח! הנה איך נראית בשחור [IMAGE: black] יפה מאוד, נכון?"
 
 כללי התנהגות:
@@ -455,7 +458,15 @@ const SET_IMAGE_MAP = {
   'set-brown': `${GITHUB_RAW_BASE}/set-brown.jpeg`
 };
 // Merge into one lookup table used by extractImageTags/sendReplyWithImages
-const ALL_IMAGE_MAP = { ...COLOR_IMAGE_MAP, ...SET_IMAGE_MAP };
+const MODEL_IMAGE_MAP = {
+  'model-148': `${GITHUB_RAW_BASE}/model-148.jpeg`,
+  'model-yamsuf': `${GITHUB_RAW_BASE}/model-yamsuf.jpeg`,
+  'model-bridge': `${GITHUB_RAW_BASE}/model-bridge.jpeg`,
+  'model-770-back': `${GITHUB_RAW_BASE}/model-770-back.jpeg`,
+  'model-770-front': `${GITHUB_RAW_BASE}/model-770-front.jpeg`,
+  'model-770-wick': `${GITHUB_RAW_BASE}/model-770-wick.jpeg`
+};
+const ALL_IMAGE_MAP = { ...COLOR_IMAGE_MAP, ...SET_IMAGE_MAP, ...MODEL_IMAGE_MAP };
 
 // Full gallery sent automatically on a new conversation: every individual shirt color + every set color
 // (multicolor is sent separately, at the very end, after the colors text message)
@@ -537,7 +548,7 @@ function normalizePhone(p) {
 // Extract [IMAGE: color] tags, return { cleanText, colors }
 function extractImageTags(text) {
   const colors = [];
-  const cleanText = text.replace(/\[IMAGE:\s*([a-zA-Z-]+)\s*\]/g, (match, color) => {
+  const cleanText = text.replace(/\[IMAGE:\s*([a-zA-Z0-9-]+)\s*\]/g, (match, color) => {
     colors.push(color.toLowerCase().trim());
     return '';
   }).replace(/[ \t]+\n/g, '\n').trim();
